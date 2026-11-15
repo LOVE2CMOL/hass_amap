@@ -216,6 +216,14 @@ amap_module_url: "https://ha.example.com/local/hass_amap.js?amapKey=你的Key&am
 
 ### 鉴权报错排查（`INVALID_USER_DOMAIN`）
 
+> ⚠️ 先记住一个坑：**HA 页面默认不带 Referer**（响应头 `referrer-policy: no-referrer`，
+> 页面里还有 `<meta name="referrer" content="same-origin">`）。
+> 高德的「域名白名单」是拿 Referer 的主机名匹配的 —— 跨域代理（`serviceHost` 指向另一个域名）时
+> **白名单方案永远不会生效**，必须靠 `jscode`（也就是代理模式）。
+> 想让白名单可用，得把代理挂到 HA **同源**路径（`serviceHost: '/_AMapService'`），或在代理里补
+> `proxy_set_header Referer "https://你的HA域名/";`。
+
+
 按顺序查：
 
 1. **看配置是否真的生效**：浏览器控制台执行
