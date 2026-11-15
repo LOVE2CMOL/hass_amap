@@ -147,7 +147,13 @@
 				mlCenter: [+center.lng.toFixed(6), +center.lat.toFixed(6)],
 				amapCenter: amap && typeof amap.getCenter === 'function' ? amap.getCenter().toJSON?.() ?? null : null,
 				pitch: +map.getPitch().toFixed(2),
-				bearing: +map.getBearing().toFixed(2)
+				bearing: +map.getBearing().toFixed(2),
+				amapPitch: amap && typeof amap.getPitch === 'function' ? amap.getPitch() : null,
+				amapRotation: amap && typeof amap.getRotation === 'function' ? amap.getRotation() : null,
+				hostSize: entry.base.host ? [entry.base.host.clientWidth, entry.base.host.clientHeight] : null,
+				canvasSize: [map.getCanvas().clientWidth, map.getCanvas().clientHeight],
+				amapSize: amap && typeof amap.getSize === 'function' ? [amap.getSize().width, amap.getSize().height] : null,
+				dpr: window.devicePixelRatio || 1
 			});
 		}
 		return {
