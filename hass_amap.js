@@ -137,14 +137,15 @@
 			const center = map.getCenter();
 			const mlZoom = map.getZoom();
 			const mlResolution = 40075016.68557849 * Math.cos(center.lat * Math.PI / 180) / (512 * 2 ** mlZoom);
+			const amap = entry.base.amap;
 			maps.push({
 				mlZoom: +mlZoom.toFixed(4),
-				amapZoom: entry.base.amap ? entry.base.amap.getZoom() : null,
+				amapZoom: amap && typeof amap.getZoom === 'function' ? amap.getZoom() : null,
 				zoomOffset: CONFIG.zoomOffset,
 				mlResolution: +mlResolution.toFixed(4),
-				amapResolution: entry.base.amap ? +entry.base.amap.getResolution().toFixed(4) : null,
+				amapResolution: amap && typeof amap.getResolution === 'function' ? +amap.getResolution().toFixed(4) : null,
 				mlCenter: [+center.lng.toFixed(6), +center.lat.toFixed(6)],
-				amapCenter: entry.base.amap ? entry.base.amap.getCenter().toJSON() : null,
+				amapCenter: amap && typeof amap.getCenter === 'function' ? amap.getCenter().toJSON?.() ?? null : null,
 				pitch: +map.getPitch().toFixed(2),
 				bearing: +map.getBearing().toFixed(2)
 			});
@@ -177,6 +178,12 @@
 	};
 
 	// 记录每张 HA 地图：map -> {base, originalProjection, teardown()}
+	// 放全局共享，保证“脚本被加载两次”时两次闭包看到的是同一份
+	const connectedMaps = (window.__hassAmapMaps ||= new Map());
+	let sdkPromise;
+	let loadLogged = false;
+	let fallbackReported = false;
+
 	// 同一页面可能被加载两次（Lovelace 资源 ＋ frontend.extra_module_url）：
 	// 第二次只合并配置（resolveSettings 已做），不再重复初始化
 	if (window.__hassAmapInstalled) {
@@ -184,11 +191,6 @@
 		return;
 	}
 	window.__hassAmapInstalled = true;
-
-	const connectedMaps = new Map();
-	let sdkPromise;
-	let loadLogged = false;
-	let fallbackReported = false;
 
 	// ---------- 1. 拦掉 HA 自带底图样式，只留业务图层 ----------
 	const originalFetch = window.fetch;
