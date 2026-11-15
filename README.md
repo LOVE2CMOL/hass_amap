@@ -111,7 +111,7 @@ const serviceHost = '/_AMapService';                  // 同源相对路径（�
 ```
 
 - 写相对路径时脚本会补成 `location.origin + '/_AMapService'`；
-- 漏写 `/_AMapService` 前缀会自动补上（如 `https://ha.example.com` → `https://ha.example.com/_AMapService`）；
+- **只写域名**（如 `https://ha.example.com`）会自动补 `/_AMapService`；**已带路径**（如 `/custom-proxy`）则原样使用，不替你做拼接；
 - **建议代理与 HA 同源**；若代理放在别的域名，需要给该域名加 CORS 头（`Access-Control-Allow-Origin`）。
 
 ### B. 明文方式（仅开发 / 内网临时用）

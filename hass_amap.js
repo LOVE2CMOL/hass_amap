@@ -34,7 +34,7 @@
 	// 安全密钥（2021-12-02 之后申请的 Key 需要；更老的 Key 两项都留空即可）
 	// 方式 A（推荐，安全）：安全密钥代理。填 *_AMapService 代理地址，密钥只在服务器端，不进浏览器。
 	//   可写同源相对路径 '/_AMapService'，也可写完整地址 'https://ha.example.com/_AMapService'
-	//   （没写 /_AMapService 前缀时脚本会自动补上）
+	//   （只写域名时会自动补 /_AMapService；带了自定义路径则原样使用）
 	const serviceHost = '';
 	// 方式 B（明文，仅开发/临时用）：直接把 securityJsCode 写进来，会暴露在浏览器里
 	//   两项同时配置时以代理为准，明文会被忽略
@@ -153,23 +153,26 @@
 		});
 	}
 
-	// 高德要求代理地址带固定的 /_AMapService 前缀，这里做一次规范化
+	// 代理地址规范化：只写域名时补上高德固定的 /_AMapService 前缀；
+	// 已经带了路径（如 /_AMapService、/custom-proxy）则原样使用，不替用户猜
 	function normalizeServiceHost(value) {
-		if (!value) {
-			return '';
-		}
-		let host = String(value).trim();
+		let host = String(value || '').trim();
 		if (!host) {
 			return '';
 		}
 		if (host.startsWith('/')) {
 			host = location.origin + host;
 		}
-		host = host.replace(/\/+$/, '');
-		if (!/AMapService$/.test(host)) {
-			host += '/_AMapService';
+		let url;
+		try {
+			url = new URL(host);
+		} catch (error) {
+			return host.replace(/\/+$/, '');
 		}
-		return host;
+		if (!url.pathname.replace(/\/+$/, '')) {
+			url.pathname = '/_AMapService';
+		}
+		return url.toString().replace(/\/+$/, '');
 	}
 
 	// 安全密钥必须在 JS API 脚本加载之前设置，否则设置无效
