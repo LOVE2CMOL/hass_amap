@@ -204,6 +204,8 @@ amap_module_url: "https://ha.example.com/local/hass_amap.js?amapKey=你的Key&am
 |---|---|---|
 | 底图空白、标记还在 | Key 错 / 安全密钥缺 / 白名单不符 | 看控制台 `INVALID_USER_KEY`、`INVALID_USER_SCODE`、`INVALID_USER_DOMAIN` |
 | 走代理后仍报 `INVALID_USER_SCODE` | 代理没生效（404 / 没注入 `jscode` / 跨域被拦） | 打开 Network 看 `_AMapService/...` 请求是否 200；检查 Nginx 两个 location 与 `nginx -s reload` |
+| `FlyDataAuthTask error: INVALID_USER_DOMAIN` | **Key 的域名白名单不含当前访问域名**，且安全密钥没生效 | 见下面「鉴权报错排查」 |
+| `Uncaught Error: Unimplemented type: 3` | 通常是上面鉴权失败后的连带报错 | 先把鉴权修好，一般会一起消失 |
 | 控制台提示“同时配置了代理与明文密钥” | 两项都填了 | 删掉 `securityJsCode`，只留 `serviceHost` |
 | 直接变回 HA 原生底图 | 脚本已**自动回退**（Key 没填、SDK 超时、被 CSP 拦） | 控制台会打印 `已回退到 Home Assistant 原生底图` 及具体错误 |
 | 底图与标记整体偏移几百米 | HA 里存的坐标不是 WGS84（例如自定义集成直接写了 GCJ-02） | 本脚本按 WGS84 处理，数据源需自行统一 |
@@ -211,6 +213,33 @@ amap_module_url: "https://ha.example.com/local/hass_amap.js?amapKey=你的Key&am
 | 地图没出来 | 容器尺寸为 0（隐藏的 tab / 折叠卡片） | 脚本会等尺寸并在显示后 `resize()`；仍不行就报 issue |
 
 > 回退是**保底**，不是故障：SDK 起不来时宁可看 HA 原生底图，也不留一块白板。
+
+### 鉴权报错排查（`INVALID_USER_DOMAIN`）
+
+按顺序查：
+
+1. **看配置是否真的生效**：浏览器控制台执行
+   ```js
+   __hassAmapDebug()
+   ```
+   应该看到 `serviceHost` 是你配的代理地址、`securityConfig` 里有对应值。
+   若 `serviceHost` 是 `(未配置)` → 配置没进去（检查 URL 参数拼写 / 是否被另一处加载抢先）。
+
+2. **看代理请求**：Network 面板过滤 `_AMapService`：
+   - `200` → 代理通了；
+   - `404` → 请求落到了 HA（说明 Nginx 的 `location /_AMapService/` 没生效：配错 server 块、没 `nginx -s reload`、或 HA 前面还有一层反代没改）。
+
+3. **命令行自测**：
+   ```bash
+   curl -i "https://你的HA域名/_AMapService/v4/map/styles?key=test"
+   ```
+   返回 Nginx/HA 的 404 → 代理没配好；返回高德的 JSON（哪怕带报错）→ 代理通了。
+
+4. **临时替代方案**（不想立刻弄代理时）：
+   - 到高德控制台把当前访问域名加进该 Key 的「域名白名单」；
+   - 或先用明文 `securityJsCode` 顶着（会暴露，仅临时）。
+
+> `Unimplemented type: 3` 是鉴权失败后的连带报错，鉴权修好后会一起消失。
 
 ---
 

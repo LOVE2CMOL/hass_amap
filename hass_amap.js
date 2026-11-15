@@ -22,11 +22,6 @@
 (() => {
 	'use strict';
 
-	if (window.__hassAmapInstalled) {
-		return;
-	}
-	window.__hassAmapInstalled = true;
-
 	// ==================== 配置（key 必填，安全密钥二选一）====================
 	// 高德开放平台 → 应用管理 → 我的应用 → 添加 Key（服务平台选「Web 端(JS API)」）
 	const key = '<高德地图Key>';
@@ -47,6 +42,24 @@
 	// 优先级：window.__hassAmapConfig > URL 参数 > 这里的常量
 	// ================================================================
 
+	const CONFIG = {
+		// 高德内置样式；浅色用 normal，深色用 dark（也支持 amap://styles/grey / whitesmoke / darkblue 等）
+		lightStyle: 'amap://styles/normal',
+		darkStyle: 'amap://styles/dark',
+		// 高德瓦片 256px、MapLibre 512px，同一比例尺下 zoom 相差 1
+		zoomOffset: 1,
+		minZoom: 2,
+		maxZoom: 20,
+		// 两边透视视场角不完全一致，俯仰角换算系数；觉得高角度对不齐可微调（0.8~1.2）
+		pitchGain: 1,
+		// 高德俯仰角上限（2D 地图无效，3D 地图在 0~83 之间）
+		maxPitch: 83,
+		loadTimeout: 20000
+	};
+
+	const HOST_CLASS = 'ha-amap-host';
+
+	// ---------- 配置解析：文件常量 < 上次加载的配置 < 本次 URL 参数 / window 注入 ----------
 	// 允许把配置挂在本脚本 URL 的查询参数上（configuration.yaml / 资源地址都能用）
 	const URL_CONFIG_FIELDS = [
 		['amapKey', 'key'],
@@ -95,34 +108,48 @@
 		return config;
 	}
 
-	const settings = {
-		key,
-		serviceHost,
-		securityJsCode,
-		...readUrlConfig(),
-		...(window.__hassAmapConfig || {})
-	};
+	function resolveSettings() {
+		const explicit = {...readUrlConfig(), ...(window.__hassAmapConfig || {})};
+		const merged = {
+			key,
+			serviceHost,
+			securityJsCode,
+			...(window.__hassAmapSettings || {}),
+			...explicit
+		};
+		window.__hassAmapSettings = merged;
+		return merged;
+	}
 
-	const CONFIG = {
-		// 高德内置样式；浅色用 normal，深色用 dark（也支持 amap://styles/grey / whitesmoke / darkblue 等）
-		lightStyle: 'amap://styles/normal',
-		darkStyle: 'amap://styles/dark',
-		// 高德瓦片 256px、MapLibre 512px，同一比例尺下 zoom 相差 1
-		zoomOffset: 1,
-		minZoom: 2,
-		maxZoom: 20,
-		// 两边透视视场角不完全一致，俯仰角换算系数；觉得高角度对不齐可微调（0.8~1.2）
-		pitchGain: 1,
-		// 高德俯仰角上限（2D 地图无效，3D 地图在 0~83 之间）
-		maxPitch: 83,
-		loadTimeout: 20000
-	};
+	const settings = resolveSettings();
 
-	const HOST_CLASS = 'ha-amap-host';
+	function currentSettings() {
+		return window.__hassAmapSettings || settings;
+	}
+
+	// 同一页面可能被加载两次（Lovelace 资源 ＋ frontend.extra_module_url）：
+	// 第二次只合并配置（resolveSettings 已做），不再重复初始化
+	if (window.__hassAmapInstalled) {
+		console.info('[hass_amap] 脚本被重复加载，已合并配置并跳过初始化');
+		return;
+	}
+	window.__hassAmapInstalled = true;
+
+	// 排查用：控制台执行 __hassAmapDebug() 查看当前生效的配置
+	window.__hassAmapDebug = () => ({
+		key: currentSettings().key && !currentSettings().key.startsWith('<')
+			? `${currentSettings().key.slice(0, 6)}…${currentSettings().key.slice(-4)}`
+			: '(未填写)',
+		serviceHost: normalizeServiceHost(currentSettings().serviceHost) || '(未配置)',
+		securityJsCode: currentSettings().securityJsCode ? '(已设置·明文)' : '(未配置)',
+		securityConfig: window._AMapSecurityConfig || null,
+		maps: connectedMaps.size
+	});
 
 	// 记录每张 HA 地图：map -> {base, originalProjection, teardown()}
 	const connectedMaps = new Map();
 	let sdkPromise;
+	let loadLogged = false;
 	let fallbackReported = false;
 
 	// ---------- 1. 拦掉 HA 自带底图样式，只留业务图层 ----------
@@ -239,15 +266,16 @@
 
 	// 安全密钥必须在 JS API 脚本加载之前设置，否则设置无效
 	function applySecurityConfig() {
-		const host = normalizeServiceHost(settings.serviceHost);
+		const active = currentSettings();
+		const host = normalizeServiceHost(active.serviceHost);
 		const config = {...(window._AMapSecurityConfig || {})};
 		if (host) {
-			if (settings.securityJsCode) {
+			if (active.securityJsCode) {
 				console.info('[hass_amap] 同时配置了安全密钥代理与明文密钥，按代理处理（明文忽略）');
 			}
 			config.serviceHost = host;
-		} else if (settings.securityJsCode) {
-			config.securityJsCode = settings.securityJsCode;
+		} else if (active.securityJsCode) {
+			config.securityJsCode = active.securityJsCode;
 		} else {
 			return;
 		}
@@ -256,16 +284,21 @@
 
 	function loadAmapSDK() {
 		return sdkPromise ??= (async () => {
-			if (!settings.key || settings.key.startsWith('<')) {
+			const active = currentSettings();
+			if (!active.key || active.key.startsWith('<')) {
 				throw new Error('请填写高德 Web 端 Key（文件顶部「配置」，或 URL 参数 amapKey）');
 			}
 			applySecurityConfig();
+			if (!loadLogged) {
+				loadLogged = true;
+				console.info('[hass_amap] 生效配置：', window.__hassAmapDebug?.());
+			}
 			if (window.AMap) {
 				return window.AMap;
 			}
 			const url = new URL('https://webapi.amap.com/maps');
 			url.searchParams.set('v', '2.0');
-			url.searchParams.set('key', settings.key);
+			url.searchParams.set('key', active.key);
 			// 官方限制：异步插入 <script> 必须带 callback，且回调要先挂到 window 上
 			const callbackName = '__hassAmapReady';
 			const sdkReady = new Promise((resolve) => {
