@@ -219,20 +219,30 @@ amap_module_url: "https://ha.example.com/local/hass_amap.js?amapKey=你的Key&am
 
 ### 鉴权报错排查（`INVALID_USER_DOMAIN`）
 
-> ⚠️ **实测（2026-11）：高德 webapi 要求「Referer 命中白名单」和「jscode 有效」**两者都满足**：**
+> ⚠️ **实测（2026-11）：高德对「Referer 命中域名白名单」是硬要求，`jscode` 替代不了它。**
 >
 > | 请求 | 结果 |
 > |---|---|
 > | 有 jscode、**无 Referer** | `INVALID_USER_DOMAIN`（即使 jscode 正确） |
-> | 有 Referer、无 jscode | `INVALID_USER_SCODE` |
+> | 有 Referer、无 jscode（webapi/restapi 接口） | `INVALID_USER_SCODE` |
 > | 两者都有 | 通过 |
 >
-> 而 **HA 页面默认不发 Referer**（响应头 `referrer-policy: no-referrer`，页面 meta 是 `same-origin`）。
-> 所以只配代理 + jscode 还不够，必须补 Referer：
+> 另外要知道：**数据接口 `jsapi.amap.com` / `pre-vdata.amap.com` 是浏览器直连的**
+> （`serviceHost` 只代理 `v3/*` 和 `v4/map/styles`），这些直连请求**只认 Referer**。
+> 实测 `POST https://jsapi.amap.com/web/rendering/vdata/getTiles`：
+> - 无 Referer → `{"infocode":"10006","info":"INVALID_USER_DOMAIN"}`（就是控制台里 `FlyDataAuthTask error` 的来源）
+> - 带 `Referer: https://ha.example.com/` → `{"status":"1","info":"OK"}`
 >
-> - 让浏览器发：把 HA vhost 的 `Referrer-Policy` 改成 `strict-origin-when-cross-origin`；
-> - 或让代理补（推荐，不依赖浏览器）：在 `_AMapService` 的 location 里加
->   `proxy_set_header Referer "https://你的HA域名/";`
+> 而 **HA 页面默认不发 Referer**（响应头 `referrer-policy: no-referrer`，页面 meta 是 `same-origin`）。
+>
+> **一行修好**：在 HA 的反代 server 块里改成
+> ```nginx
+> add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+> ```
+> 它只发 origin（域名，不含路径/参数），安全影响很小。改完硬刷新即可。
+>
+> 如果不想动全局策略，也可以让代理代发：在 `_AMapService` 的 location 里加
+> `proxy_set_header Referer "https://你的HA域名/";`（只覆盖走代理的请求，管不到直连 jsapi/vdata）。
 
 
 按顺序查：
