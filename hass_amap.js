@@ -54,7 +54,9 @@
 		pitchGain: 1,
 		// 高德俯仰角上限（2D 地图无效，3D 地图在 0~83 之间）
 		maxPitch: 83,
-		loadTimeout: 20000
+		loadTimeout: 20000,
+		// 底图自带比例尺：HA 的 scale_ruler 没开时补一个；开了会自动跳过，不重复画
+		showScaleBar: true
 	};
 
 	const HOST_CLASS = 'ha-amap-host';
@@ -495,6 +497,64 @@
 			this.themeObserver.observe(container, {attributes: true, attributeFilter: ['class']});
 
 			this.applyView();
+			this.ensureScaleBar();
+		}
+
+		// HA 的 scale_ruler 没开时，自己画一个比例尺（开了就跳过，避免重复）
+		ensureScaleBar() {
+			if (!CONFIG.showScaleBar) {
+				return;
+			}
+			const container = this.map.getContainer();
+			if (!container || container.querySelector('.maplibregl-ctrl-scale')) {
+				return;
+			}
+			const bar = this.scaleBar = document.createElement('div');
+			bar.className = 'ha-amap-scale';
+			bar.style.cssText = 'position:absolute;left:8px;bottom:8px;z-index:2;background:rgba(255,255,255,.75);'
+				+ 'border:2px solid #333;border-top:none;color:#333;font:10px/1.6 sans-serif;padding:0 5px;'
+				+ 'pointer-events:none;box-sizing:border-box;white-space:nowrap;';
+			container.append(bar);
+			this.updateScaleBar();
+		}
+
+		updateScaleBar() {
+			if (!this.scaleBar) {
+				return;
+			}
+			const center = this.map.getCenter();
+			// MapLibre：世界宽 512 * 2^zoom 像素
+			const resolution = 40075016.68557849 * Math.cos(center.lat * Math.PI / 180) / (512 * 2 ** this.map.getZoom());
+			if (!Number.isFinite(resolution) || resolution <= 0) {
+				return;
+			}
+			const targetMeters = 100 * resolution;
+			const magnitude = 10 ** Math.floor(Math.log10(targetMeters));
+			let meters = magnitude;
+			for (const step of [1, 2, 5, 10]) {
+				if (magnitude * step <= targetMeters) {
+					meters = magnitude * step;
+				}
+			}
+			const width = Math.max(30, Math.round(meters / resolution));
+			const label = meters >= 1000
+				? `${+(meters / 1000).toFixed(meters % 1000 ? 1 : 0)} km`
+				: `${Math.round(meters)} m`;
+			if (width === this.scaleWidth && label === this.scaleLabel) {
+				return;
+			}
+			this.scaleWidth = width;
+			this.scaleLabel = label;
+			this.scaleBar.style.width = `${width}px`;
+			this.scaleBar.textContent = label;
+			// 跟随深/浅色主题
+			const dark = this.isDarkMode();
+			if (dark !== this.scaleDark) {
+				this.scaleDark = dark;
+				this.scaleBar.style.background = dark ? 'rgba(0,0,0,.55)' : 'rgba(255,255,255,.75)';
+				this.scaleBar.style.borderColor = dark ? '#ddd' : '#333';
+				this.scaleBar.style.color = dark ? '#eee' : '#333';
+			}
 		}
 
 		async waitForSize() {
@@ -567,6 +627,7 @@
 					this.warnOnce(error);
 				}
 			}
+			this.updateScaleBar();
 			const style = this.pickMapStyle();
 			if (style !== this.styleName) {
 				this.styleName = style;
@@ -648,6 +709,8 @@
 				// 高德内部已卸载时忽略
 			}
 			this.amap = null;
+			this.scaleBar?.remove();
+			this.scaleBar = null;
 			this.host?.remove();
 			const canvasContainer = map.getContainer().querySelector('.maplibregl-canvas-container');
 			if (canvasContainer) {
