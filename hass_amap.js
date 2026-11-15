@@ -451,7 +451,8 @@
 			});
 
 			this.amap.on('complete', this.onViewChange);
-			for (const name of ['move', 'zoom', 'rotate', 'pitch']) {
+			// render 也挂上：万一个别版本 move/zoom 事件没按预期触发，也能在每帧对齐
+			for (const name of ['move', 'zoom', 'rotate', 'pitch', 'render']) {
 				map.on(name, this.onViewChange);
 			}
 			map.on('resize', this.onResize);
@@ -596,7 +597,7 @@
 			this.destroyed = true;
 			cancelAnimationFrame(this.frame);
 			const map = this.map;
-			for (const name of ['move', 'zoom', 'rotate', 'pitch']) {
+			for (const name of ['move', 'zoom', 'rotate', 'pitch', 'render']) {
 				map.off(name, this.onViewChange);
 			}
 			map.off('resize', this.onResize);
