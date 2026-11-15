@@ -16,7 +16,7 @@
  *   1. 把本文件放到 /config/www/hass_amap.js
  *   2. HA → 设置 → 仪表盘 → 右上角 ⋮ → 资源 → 添加资源
  *      URL 填 /local/hass_amap.js（类型选「JavaScript 模块」即可）
- *   3. 改下面「配置」里的 key / securityJsCode，保存后强刷浏览器
+ *   3. 改下面「配置」里的 key（安全密钥二选一：serviceHost 代理 / securityJsCode 明文），保存后强刷浏览器
  */
 
 (() => {
@@ -27,10 +27,17 @@
 	}
 	window.__hassAmapInstalled = true;
 
-	// ==================== 配置（只改这两行必填项）====================
+	// ==================== 配置（key 必填，安全密钥二选一）====================
 	// 高德开放平台 → 应用管理 → 我的应用 → 添加 Key（服务平台选「Web 端(JS API)」）
 	const key = '<高德地图Key>';
-	// 2021-12-02 之后申请的 Key 必须配「安全密钥」，填在这里；更老的 Key 留空
+
+	// 安全密钥（2021-12-02 之后申请的 Key 需要；更老的 Key 两项都留空即可）
+	// 方式 A（推荐，安全）：安全密钥代理。填 *_AMapService 代理地址，密钥只在服务器端，不进浏览器。
+	//   可写同源相对路径 '/_AMapService'，也可写完整地址 'https://ha.example.com/_AMapService'
+	//   （没写 /_AMapService 前缀时脚本会自动补上）
+	const serviceHost = '';
+	// 方式 B（明文，仅开发/临时用）：直接把 securityJsCode 写进来，会暴露在浏览器里
+	//   两项同时配置时以代理为准，明文会被忽略
 	const securityJsCode = '';
 	// ================================================================
 
@@ -146,17 +153,50 @@
 		});
 	}
 
+	// 高德要求代理地址带固定的 /_AMapService 前缀，这里做一次规范化
+	function normalizeServiceHost(value) {
+		if (!value) {
+			return '';
+		}
+		let host = String(value).trim();
+		if (!host) {
+			return '';
+		}
+		if (host.startsWith('/')) {
+			host = location.origin + host;
+		}
+		host = host.replace(/\/+$/, '');
+		if (!/AMapService$/.test(host)) {
+			host += '/_AMapService';
+		}
+		return host;
+	}
+
+	// 安全密钥必须在 JS API 脚本加载之前设置，否则设置无效
+	function applySecurityConfig() {
+		const host = normalizeServiceHost(serviceHost);
+		const config = {...(window._AMapSecurityConfig || {})};
+		if (host) {
+			if (securityJsCode) {
+				console.info('[hass_amap] 同时配置了安全密钥代理与明文密钥，按代理处理（明文忽略）');
+			}
+			config.serviceHost = host;
+		} else if (securityJsCode) {
+			config.securityJsCode = securityJsCode;
+		} else {
+			return;
+		}
+		window._AMapSecurityConfig = config;
+	}
+
 	function loadAmapSDK() {
 		return sdkPromise ??= (async () => {
 			if (!key || key.startsWith('<')) {
 				throw new Error('请先在 hass_amap.js 顶部的「配置」里填写高德 Web 端 Key');
 			}
+			applySecurityConfig();
 			if (window.AMap) {
 				return window.AMap;
-			}
-			// 安全密钥必须在 SDK 之前设置
-			if (securityJsCode) {
-				window._AMapSecurityConfig = {securityJsCode};
 			}
 			const url = new URL('https://webapi.amap.com/maps');
 			url.searchParams.set('v', '2.0');

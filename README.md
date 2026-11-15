@@ -31,11 +31,14 @@ HA 原有的**设备标记 / 人员轨迹 / 区域编辑**等业务图层全部�
 1. 下载 [`hass_amap.js`](./hass_amap.js)，放到 HA 的 `/config/www/` 目录（例如 `/config/www/hass_amap.js`）。
    > 原来用百度版、资源地址是 `/local/hass_bmap.js` 的，可以把本文件**改名成 `hass_bmap.js` 直接顶替**
    > （脚本不依赖文件名，改完强刷即可）。
-2. 编辑文件顶部「配置」两行：
+2. 编辑文件顶部「配置」：
 
    ```js
    const key = '你的高德Web端Key';
-   const securityJsCode = '';   // 2021-12-02 之后申请的 Key 必填
+
+   // 安全密钥二选一（推荐 A：代理，密钥不进浏览器）
+   const serviceHost = '/_AMapService';   // A) 代理地址
+   const securityJsCode = '';             // B) 明文密钥（仅开发用）
    ```
 
 3. 在 HA 里注册前端资源，二选一：
@@ -64,8 +67,64 @@ HA 原有的**设备标记 / 人员轨迹 / 区域编辑**等业务图层全部�
 
 - **服务平台**：`Web 端 (JS API)`
 - **域名白名单**：填你访问 HA 用的域名（如 `ha.example.com`；用 IP 访问就填 IP）
-- 若 Key 是 2021-12-02 之后申请的，还要在「安全密钥」里拿一个 `securityJsCode` 填进脚本；
-  不填会报 `INVALID_USER_SCODE` / 地图空白。
+- 若 Key 是 2021-12-02 之后申请的，还要配「安全密钥」，见下一节；不配会报 `INVALID_USER_SCODE` / 地图空白。
+
+---
+
+## 安全密钥（推荐用代理）
+
+2021-12-02 之后申请的 Key 必须配安全密钥。脚本支持两种方式，**代理优先**：
+
+### A. 代理方式（推荐 —— 密钥只待在服务器端）
+
+思路：在 HA 前面的 Nginx 加两个反向代理，把 `jscode=安全密钥` 在**服务端**拼进高德请求；
+浏览器里只出现代理地址，看不到密钥。
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name ha.example.com;
+
+    # ① 高德 Web 服务 API 代理（瓦片 / 检索等，必须）
+    location /_AMapService/ {
+        set $args "$args&jscode=你的安全密钥";
+        proxy_pass https://restapi.amap.com/;
+    }
+
+    # ② 自定义地图样式代理（用不到"自定义地图"可以不配）
+    location /_AMapService/v4/map/styles {
+        set $args "$args&jscode=你的安全密钥";
+        proxy_pass https://webapi.amap.com/v4/map/styles;
+    }
+
+    # ……其它 HA 反代配置照旧……
+}
+```
+
+> `_AMapService` 是高德规定的前缀，**不能改名**；改完执行 `nginx -s reload`。
+
+脚本里只填代理地址：
+
+```js
+const serviceHost = '/_AMapService';                  // 同源相对路径（推荐）
+// const serviceHost = 'https://ha.example.com/_AMapService';  // 或完整地址
+```
+
+- 写相对路径时脚本会补成 `location.origin + '/_AMapService'`；
+- 漏写 `/_AMapService` 前缀会自动补上（如 `https://ha.example.com` → `https://ha.example.com/_AMapService`）；
+- **建议代理与 HA 同源**；若代理放在别的域名，需要给该域名加 CORS 头（`Access-Control-Allow-Origin`）。
+
+### B. 明文方式（仅开发 / 内网临时用）
+
+```js
+const securityJsCode = '你的securityJsCode';
+```
+
+⚠️ 明文会直接出现在页面源码与网络面板里，**不建议生产使用**。
+
+### 优先级
+
+`serviceHost` 与 `securityJsCode` 同时填写时，**以代理为准**，明文被忽略（控制台会提示一句）。
 
 ---
 
@@ -90,6 +149,8 @@ HA 原有的**设备标记 / 人员轨迹 / 区域编辑**等业务图层全部�
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 底图空白、标记还在 | Key 错 / 安全密钥缺 / 白名单不符 | 看控制台 `INVALID_USER_KEY`、`INVALID_USER_SCODE`、`INVALID_USER_DOMAIN` |
+| 走代理后仍报 `INVALID_USER_SCODE` | 代理没生效（404 / 没注入 `jscode` / 跨域被拦） | 打开 Network 看 `_AMapService/...` 请求是否 200；检查 Nginx 两个 location 与 `nginx -s reload` |
+| 控制台提示“同时配置了代理与明文密钥” | 两项都填了 | 删掉 `securityJsCode`，只留 `serviceHost` |
 | 直接变回 HA 原生底图 | 脚本已**自动回退**（Key 没填、SDK 超时、被 CSP 拦） | 控制台会打印 `已回退到 Home Assistant 原生底图` 及具体错误 |
 | 底图与标记整体偏移几百米 | HA 里存的坐标不是 WGS84（例如自定义集成直接写了 GCJ-02） | 本脚本按 WGS84 处理，数据源需自行统一 |
 | 一打开地图卡一下 | 每次进入仪表盘都要新建高德实例、拉瓦片 | 正常现象；同一页面别放太多地图卡片 |
