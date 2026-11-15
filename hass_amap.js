@@ -135,16 +135,54 @@
 	}
 	window.__hassAmapInstalled = true;
 
-	// 排查用：控制台执行 __hassAmapDebug() 查看当前生效的配置
-	window.__hassAmapDebug = () => ({
-		key: currentSettings().key && !currentSettings().key.startsWith('<')
-			? `${currentSettings().key.slice(0, 6)}…${currentSettings().key.slice(-4)}`
-			: '(未填写)',
-		serviceHost: normalizeServiceHost(currentSettings().serviceHost) || '(未配置)',
-		securityJsCode: currentSettings().securityJsCode ? '(已设置·明文)' : '(未配置)',
-		securityConfig: window._AMapSecurityConfig || null,
-		maps: connectedMaps.size
-	});
+	// 排查用：控制台执行 __hassAmapDebug() 查看当前生效的配置与缩放/分辨率
+	window.__hassAmapDebug = () => {
+		const maps = [];
+		for (const [map, entry] of connectedMaps) {
+			if (!entry) {
+				continue;
+			}
+			const center = map.getCenter();
+			const mlZoom = map.getZoom();
+			const mlResolution = 40075016.68557849 * Math.cos(center.lat * Math.PI / 180) / (512 * 2 ** mlZoom);
+			maps.push({
+				mlZoom: +mlZoom.toFixed(4),
+				amapZoom: entry.base.amap ? entry.base.amap.getZoom() : null,
+				zoomOffset: CONFIG.zoomOffset,
+				mlResolution: +mlResolution.toFixed(4),
+				amapResolution: entry.base.amap ? +entry.base.amap.getResolution().toFixed(4) : null,
+				mlCenter: [+center.lng.toFixed(6), +center.lat.toFixed(6)],
+				amapCenter: entry.base.amap ? entry.base.amap.getCenter().toJSON() : null,
+				pitch: +map.getPitch().toFixed(2),
+				bearing: +map.getBearing().toFixed(2)
+			});
+		}
+		return {
+			key: currentSettings().key && !currentSettings().key.startsWith('<')
+				? `${currentSettings().key.slice(0, 6)}…${currentSettings().key.slice(-4)}`
+				: '(未填写)',
+			serviceHost: normalizeServiceHost(currentSettings().serviceHost) || '(未配置)',
+			securityJsCode: currentSettings().securityJsCode ? '(已设置·明文)' : '(未配置)',
+			securityConfig: window._AMapSecurityConfig || null,
+			maps
+		};
+	};
+
+	// 现场调 zoom 偏移，不用改文件：__hassAmapSetZoomOffset(0) / (1) / (2)
+	window.__hassAmapSetZoomOffset = (value) => {
+		const offset = Number(value);
+		if (!Number.isFinite(offset)) {
+			return '参数要是数字';
+		}
+		CONFIG.zoomOffset = offset;
+		for (const entry of connectedMaps.values()) {
+			if (entry) {
+				entry.base.lastView = null;
+				entry.base.requestSync();
+			}
+		}
+		return `zoomOffset = ${offset}`;
+	};
 
 	// 记录每张 HA 地图：map -> {base, originalProjection, teardown()}
 	const connectedMaps = new Map();
