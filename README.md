@@ -92,12 +92,15 @@ server {
     location /_AMapService/ {
         set $args "$args&jscode=你的安全密钥";
         proxy_pass https://restapi.amap.com/;
+        # HA 页面默认不发 Referer，这里替它补一个（高德要求 Referer 命中域名白名单）
+        proxy_set_header Referer "https://ha.example.com/";
     }
 
-    # ② 自定义地图样式代理（用不到"自定义地图"可以不配）
+    # ② 地图样式 / 权限接口代理
     location /_AMapService/v4/map/styles {
         set $args "$args&jscode=你的安全密钥";
         proxy_pass https://webapi.amap.com/v4/map/styles;
+        proxy_set_header Referer "https://ha.example.com/";
     }
 
     # ……其它 HA 反代配置照旧……
@@ -216,12 +219,20 @@ amap_module_url: "https://ha.example.com/local/hass_amap.js?amapKey=你的Key&am
 
 ### 鉴权报错排查（`INVALID_USER_DOMAIN`）
 
-> ⚠️ 先记住一个坑：**HA 页面默认不带 Referer**（响应头 `referrer-policy: no-referrer`，
-> 页面里还有 `<meta name="referrer" content="same-origin">`）。
-> 高德的「域名白名单」是拿 Referer 的主机名匹配的 —— 跨域代理（`serviceHost` 指向另一个域名）时
-> **白名单方案永远不会生效**，必须靠 `jscode`（也就是代理模式）。
-> 想让白名单可用，得把代理挂到 HA **同源**路径（`serviceHost: '/_AMapService'`），或在代理里补
-> `proxy_set_header Referer "https://你的HA域名/";`。
+> ⚠️ **实测（2026-11）：高德 webapi 要求「Referer 命中白名单」和「jscode 有效」**两者都满足**：**
+>
+> | 请求 | 结果 |
+> |---|---|
+> | 有 jscode、**无 Referer** | `INVALID_USER_DOMAIN`（即使 jscode 正确） |
+> | 有 Referer、无 jscode | `INVALID_USER_SCODE` |
+> | 两者都有 | 通过 |
+>
+> 而 **HA 页面默认不发 Referer**（响应头 `referrer-policy: no-referrer`，页面 meta 是 `same-origin`）。
+> 所以只配代理 + jscode 还不够，必须补 Referer：
+>
+> - 让浏览器发：把 HA vhost 的 `Referrer-Policy` 改成 `strict-origin-when-cross-origin`；
+> - 或让代理补（推荐，不依赖浏览器）：在 `_AMapService` 的 location 里加
+>   `proxy_set_header Referer "https://你的HA域名/";`
 
 
 按顺序查：
