@@ -127,14 +127,6 @@
 		return window.__hassAmapSettings || settings;
 	}
 
-	// 同一页面可能被加载两次（Lovelace 资源 ＋ frontend.extra_module_url）：
-	// 第二次只合并配置（resolveSettings 已做），不再重复初始化
-	if (window.__hassAmapInstalled) {
-		console.info('[hass_amap] 脚本被重复加载，已合并配置并跳过初始化');
-		return;
-	}
-	window.__hassAmapInstalled = true;
-
 	// 排查用：控制台执行 __hassAmapDebug() 查看当前生效的配置与缩放/分辨率
 	window.__hassAmapDebug = () => {
 		const maps = [];
@@ -185,6 +177,14 @@
 	};
 
 	// 记录每张 HA 地图：map -> {base, originalProjection, teardown()}
+	// 同一页面可能被加载两次（Lovelace 资源 ＋ frontend.extra_module_url）：
+	// 第二次只合并配置（resolveSettings 已做），不再重复初始化
+	if (window.__hassAmapInstalled) {
+		console.info('[hass_amap] 脚本被重复加载，已合并配置并跳过初始化');
+		return;
+	}
+	window.__hassAmapInstalled = true;
+
 	const connectedMaps = new Map();
 	let sdkPromise;
 	let loadLogged = false;
