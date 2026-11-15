@@ -461,9 +461,12 @@
 				showLabel: true,
 				showBuildingBlock: true,
 				showIndoorMap: false,
-				// 交互一律交给 MapLibre，高德只负责画底图
+				// 交互一律交给 MapLibre，高德只负责画底图。
+				// ⚠️ zoomEnable 必须为 true：高德 setZoomAndCenter() 内部会检查它，
+				// 为 false 时会把我们传的 zoom 换成“当前 zoom”，程序化缩放会失效。
+				// 交互本身已经被 host 的 pointer-events:none 挡住了，不会抢手势。
 				dragEnable: false,
-				zoomEnable: false,
+				zoomEnable: true,
 				rotateEnable: false,
 				pitchEnable: false,
 				doubleClickZoom: false,
