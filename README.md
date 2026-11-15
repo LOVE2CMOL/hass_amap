@@ -196,7 +196,6 @@ amap_module_url: "https://ha.example.com/local/hass_amap.js?amapKey=你的Key&am
 | `zoomOffset` | `1` | 高德瓦片 256px、MapLibre 512px，同一比例尺 zoom 差 1；一般不用改 |
 | `pitchGain` | `1` | 俯仰角换算系数；大角度俯仰时若觉得底图与标记“上下错开”，可试 `0.9`～`1.1` |
 | `minZoom` / `maxZoom` | `2` / `20` | 高德支持的缩放范围，超出会被夹住 |
-| `rewriteDirect` | `false` | 页面不能发 Referer 时（如 HA 的 `no-referrer`），把直连高德的请求改写到代理。见「页面不放 Referer」一节 |
 
 ---
 
@@ -270,81 +269,6 @@ amap_module_url: "https://ha.example.com/local/hass_amap.js?amapKey=你的Key&am
    - 或先用明文 `securityJsCode` 顶着（会暴露，仅临时）。
 
 > `Unimplemented type: 3` 是鉴权失败后的连带报错，鉴权修好后会一起消失。
-
----
-
-## 页面不放 Referer（`no-referrer`）怎么办
-
-HA 默认**不让页面发跨域 Referer**（前端模板里写死 `<meta name="referrer" content="same-origin">`）。
-如果你的反向代理又全局加了 `Referrer-Policy: no-referrer`，浏览器就完全不带 Referer，
-高德的 `jsapi.amap.com` / `pre-vdata.amap.com` 直连接口会报 `INVALID_USER_DOMAIN`（10006）。
-
-大多数情况**改响应头最省事**（见上文），但如果你要保留全局 `no-referrer`，可以用「全部走代理」：
-
-### 1) 脚本开启改写
-
-```js
-const serviceHost = '/_AMapService';   // 建议用同源路径，省掉 CORS
-// CONFIG 里：
-rewriteDirect: true
-```
-
-开启后脚本会把 SDK 发往下面这些主机的请求（fetch 和 XHR 两种）改写成
-`{serviceHost}/h/<别名>/<原路径>`：
-
-| 高德主机 | 别名 |
-|---|---|
-| `jsapi.amap.com` | `jsapi` |
-| `pre-vdata.amap.com` | `vdata` |
-| `webapi.amap.com` | `webapi` |
-| `restapi.amap.com` | `restapi` |
-| `o4.amap.com` | `style` |
-| `custyle.amap.com` | `custyle` |
-| `fmap01.amap.com` | `fmap01` |
-
-### 2) nginx 按路径分流（每条都要补 Referer + jscode）
-
-```nginx
-location ^~ /_AMapService/h/jsapi/ {
-    set $args "$args&jscode=你的安全密钥";
-    proxy_pass https://jsapi.amap.com/;
-    proxy_set_header Referer "https://ha.example.com/";
-}
-location ^~ /_AMapService/h/vdata/ {
-    set $args "$args&jscode=你的安全密钥";
-    proxy_pass https://pre-vdata.amap.com/;
-    proxy_set_header Referer "https://ha.example.com/";
-}
-location ^~ /_AMapService/h/webapi/ {
-    set $args "$args&jscode=你的安全密钥";
-    proxy_pass https://webapi.amap.com/;
-    proxy_set_header Referer "https://ha.example.com/";
-}
-location ^~ /_AMapService/h/restapi/ {
-    set $args "$args&jscode=你的安全密钥";
-    proxy_pass https://restapi.amap.com/;
-    proxy_set_header Referer "https://ha.example.com/";
-}
-location ^~ /_AMapService/h/style/ {
-    set $args "$args&jscode=你的安全密钥";
-    proxy_pass https://o4.amap.com/;
-    proxy_set_header Referer "https://ha.example.com/";
-}
-```
-
-> 原有那两条 `_AMapService/`（`v3` / `v4/map/styles`）继续保留。
-> `Referer` 里的域名必须在该 Key 的**域名白名单**里（不带端口也行，高德按主机名匹配）。
-
-### 注意事项
-
-- **建议 `serviceHost` 用同源路径**（`/_AMapService`）：改写后仍是同源请求，不需要 CORS。
-  若用跨域域名，要额外给这些 location 加
-  `add_header Access-Control-Allow-Origin "*" always;`（并处理 `OPTIONS` 预检）。
-- 只改写 **fetch / XHR** 的请求；用 `<img>` 加载的栅格瓦片（影像、路况图层）不会被改写 ——
-  默认矢量底图不走那条，一般无影响。
-- 开启后如果出现 **404**，说明 nginx 缺对应的 `/h/` location（或 `serviceHost` 指错了）。
-- 瓦片（`{o1..o5}.amap.com`、`webrd0X.is.autonavi.com`）**默认不改写**，避免所有底图瓦片都绕你服务器；
-  实测这些请求不要求 Referer。
 
 ---
 
