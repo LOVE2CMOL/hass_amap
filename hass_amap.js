@@ -127,6 +127,50 @@
 		return window.__hassAmapSettings || settings;
 	}
 
+	// ---------- 2. WGS84 → GCJ-02（HA 存的是 WGS84，高德要火星坐标）----------
+	const PI = Math.PI;
+	const SEMI_MAJOR_AXIS = 6378245.0;
+	const ECCENTRICITY_SQUARED = 0.00669342162296594323;
+
+	function outOfChina(lng, lat) {
+		return !(lng > 73.66 && lng < 135.05 && lat > 3.86 && lat < 53.55);
+	}
+
+	function transformLat(x, y) {
+		let ret = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+		ret += (20 * Math.sin(6 * x * PI) + 20 * Math.sin(2 * x * PI)) * 2 / 3;
+		ret += (20 * Math.sin(y * PI) + 40 * Math.sin(y / 3 * PI)) * 2 / 3;
+		ret += (160 * Math.sin(y / 12 * PI) + 320 * Math.sin(y * PI / 30)) * 2 / 3;
+		return ret;
+	}
+
+	function transformLng(x, y) {
+		let ret = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+		ret += (20 * Math.sin(6 * x * PI) + 20 * Math.sin(2 * x * PI)) * 2 / 3;
+		ret += (20 * Math.sin(x * PI) + 40 * Math.sin(x / 3 * PI)) * 2 / 3;
+		ret += (150 * Math.sin(x / 12 * PI) + 300 * Math.sin(x / 30 * PI)) * 2 / 3;
+		return ret;
+	}
+
+	function wgs84ToGcj02(lng, lat) {
+		if (outOfChina(lng, lat)) {
+			return [lng, lat];
+		}
+		let dLat = transformLat(lng - 105, lat - 35);
+		let dLng = transformLng(lng - 105, lat - 35);
+		const radLat = lat / 180 * PI;
+		let magic = Math.sin(radLat);
+		magic = 1 - ECCENTRICITY_SQUARED * magic * magic;
+		const sqrtMagic = Math.sqrt(magic);
+		dLat = (dLat * 180) / ((SEMI_MAJOR_AXIS * (1 - ECCENTRICITY_SQUARED)) / (magic * sqrtMagic) * PI);
+		dLng = (dLng * 180) / (SEMI_MAJOR_AXIS / sqrtMagic * Math.cos(radLat) * PI);
+		return [lng + dLng, lat + dLat];
+	}
+
+	function clamp(value, min, max) {
+		return Math.min(max, Math.max(min, value));
+	}
+
 	// 排查用：控制台执行 __hassAmapDebug() 查看当前生效的配置与缩放/分辨率
 	window.__hassAmapDebug = () => {
 		const maps = [];
@@ -138,14 +182,27 @@
 			const mlZoom = map.getZoom();
 			const mlResolution = 40075016.68557849 * Math.cos(center.lat * Math.PI / 180) / (512 * 2 ** mlZoom);
 			const amap = entry.base.amap;
+			const expected = CONFIG.convertGcj === false
+				? [center.lng, center.lat]
+				: wgs84ToGcj02(center.lng, center.lat);
+			const actual = amap && typeof amap.getCenter === 'function' ? amap.getCenter().toJSON?.() : null;
+			const centerErrorMeters = actual
+				? Math.hypot(
+					(actual[0] - expected[0]) * Math.cos(center.lat * Math.PI / 180) * 111320,
+					(actual[1] - expected[1]) * 110540
+				)
+				: null;
 			maps.push({
 				mlZoom: +mlZoom.toFixed(4),
 				amapZoom: amap && typeof amap.getZoom === 'function' ? amap.getZoom() : null,
 				zoomOffset: CONFIG.zoomOffset,
+				convertGcj: CONFIG.convertGcj,
 				mlResolution: +mlResolution.toFixed(4),
 				amapResolution: amap && typeof amap.getResolution === 'function' ? +amap.getResolution().toFixed(4) : null,
 				mlCenter: [+center.lng.toFixed(6), +center.lat.toFixed(6)],
-				amapCenter: amap && typeof amap.getCenter === 'function' ? amap.getCenter().toJSON?.() ?? null : null,
+				expectedGcjCenter: [+expected[0].toFixed(6), +expected[1].toFixed(6)],
+				amapCenter: actual,
+				centerErrorMeters: centerErrorMeters === null ? null : +centerErrorMeters.toFixed(2),
 				pitch: +map.getPitch().toFixed(2),
 				bearing: +map.getBearing().toFixed(2),
 				amapPitch: amap && typeof amap.getPitch === 'function' ? amap.getPitch() : null,
@@ -165,6 +222,18 @@
 			securityConfig: window._AMapSecurityConfig || null,
 			maps
 		};
+	};
+
+	// 现场开关坐标转换：__hassAmapSetGcj(false) 关闭 / __hassAmapSetGcj(true) 开启
+	window.__hassAmapSetGcj = (enabled) => {
+		CONFIG.convertGcj = enabled !== false;
+		for (const entry of connectedMaps.values()) {
+			if (entry) {
+				entry.base.lastView = null;
+				entry.base.requestSync();
+			}
+		}
+		return `convertGcj = ${CONFIG.convertGcj}`;
 	};
 
 	// 现场调 zoom 偏移，不用改文件：__hassAmapSetZoomOffset(0) / (1) / (2)
@@ -211,49 +280,6 @@
 		return originalFetch.call(window, input, init);
 	};
 
-	// ---------- 2. WGS84 → GCJ-02（HA 存的是 WGS84，高德要火星坐标）----------
-	const PI = Math.PI;
-	const SEMI_MAJOR_AXIS = 6378245.0;
-	const ECCENTRICITY_SQUARED = 0.00669342162296594323;
-
-	function outOfChina(lng, lat) {
-		return !(lng > 73.66 && lng < 135.05 && lat > 3.86 && lat < 53.55);
-	}
-
-	function transformLat(x, y) {
-		let ret = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
-		ret += (20 * Math.sin(6 * x * PI) + 20 * Math.sin(2 * x * PI)) * 2 / 3;
-		ret += (20 * Math.sin(y * PI) + 40 * Math.sin(y / 3 * PI)) * 2 / 3;
-		ret += (160 * Math.sin(y / 12 * PI) + 320 * Math.sin(y * PI / 30)) * 2 / 3;
-		return ret;
-	}
-
-	function transformLng(x, y) {
-		let ret = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
-		ret += (20 * Math.sin(6 * x * PI) + 20 * Math.sin(2 * x * PI)) * 2 / 3;
-		ret += (20 * Math.sin(x * PI) + 40 * Math.sin(x / 3 * PI)) * 2 / 3;
-		ret += (150 * Math.sin(x / 12 * PI) + 300 * Math.sin(x / 30 * PI)) * 2 / 3;
-		return ret;
-	}
-
-	function wgs84ToGcj02(lng, lat) {
-		if (outOfChina(lng, lat)) {
-			return [lng, lat];
-		}
-		let dLat = transformLat(lng - 105, lat - 35);
-		let dLng = transformLng(lng - 105, lat - 35);
-		const radLat = lat / 180 * PI;
-		let magic = Math.sin(radLat);
-		magic = 1 - ECCENTRICITY_SQUARED * magic * magic;
-		const sqrtMagic = Math.sqrt(magic);
-		dLat = (dLat * 180) / ((SEMI_MAJOR_AXIS * (1 - ECCENTRICITY_SQUARED)) / (magic * sqrtMagic) * PI);
-		dLng = (dLng * 180) / (SEMI_MAJOR_AXIS / sqrtMagic * Math.cos(radLat) * PI);
-		return [lng + dLng, lat + dLat];
-	}
-
-	function clamp(value, min, max) {
-		return Math.min(max, Math.max(min, value));
-	}
 
 	// ---------- 3. 加载高德 SDK（官方脚本，不绕 CSP）----------
 	function loadScript(url) {
@@ -485,7 +511,9 @@
 		readView() {
 			const map = this.map;
 			const center = map.getCenter();
-			const gcj = wgs84ToGcj02(center.lng, center.lat);
+			const gcj = CONFIG.convertGcj === false
+				? [center.lng, center.lat]
+				: wgs84ToGcj02(center.lng, center.lat);
 			return {
 				center: gcj,
 				zoom: clamp(map.getZoom() + CONFIG.zoomOffset, CONFIG.minZoom, CONFIG.maxZoom),
@@ -511,19 +539,27 @@
 			}
 			const view = this.readView();
 			const last = this.lastView;
-			const moved = !last
+			const rotationChanged = !last || Math.abs(last.rotation - view.rotation) > 1e-3;
+			const pitchChanged = !last || Math.abs(last.pitch - view.pitch) > 1e-3;
+			const cameraChanged = !last
 				|| Math.abs(last.zoom - view.zoom) > 1e-4
-				|| Math.abs(last.pitch - view.pitch) > 1e-3
-				|| Math.abs(last.rotation - view.rotation) > 1e-3
 				|| Math.abs(last.center[0] - view.center[0]) > 1e-7
 				|| Math.abs(last.center[1] - view.center[1]) > 1e-7;
-			if (moved) {
+			if (rotationChanged || pitchChanged || cameraChanged) {
 				this.lastView = view;
 				try {
-					// immediately = true：不做动画，否则会追不上拖拽
-					this.amap.setZoomAndCenter(view.zoom, view.center, true);
-					this.amap.setPitch(view.pitch, true);
-					this.amap.setRotation(view.rotation, true);
+					// 只在真的变了才调用：反复 setPitch(0)/setRotation(0) 会让高德每帧重算相机，
+					// 缩放时中心点会一点点漂，越放大越明显
+					if (rotationChanged) {
+						this.amap.setRotation(view.rotation, true);
+					}
+					if (pitchChanged) {
+						this.amap.setPitch(view.pitch, true);
+					}
+					// 缩放和中心放最后，保证中心点不被前面的调用带偏
+					if (cameraChanged) {
+						this.amap.setZoomAndCenter(view.zoom, view.center, true);
+					}
 				} catch (error) {
 					this.warnOnce(error);
 				}
