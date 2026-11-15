@@ -31,6 +31,9 @@ HA 原有的**设备标记 / 人员轨迹 / 区域编辑**等业务图层全部�
 1. 下载 [`hass_amap.js`](./hass_amap.js)，放到 HA 的 `/config/www/` 目录（例如 `/config/www/hass_amap.js`）。
    > 原来用百度版、资源地址是 `/local/hass_bmap.js` 的，可以把本文件**改名成 `hass_bmap.js` 直接顶替**
    > （脚本不依赖文件名，改完强刷即可）。
+   >
+   > 不想改文件里的常量？也可以把配置写在 `configuration.yaml` 的 `frontend.extra_module_url` 上，
+   > 见下面「在 configuration.yaml 里配置」一节。
 2. 编辑文件顶部「配置」：
 
    ```js
@@ -125,6 +128,57 @@ const securityJsCode = '你的securityJsCode';
 ### 优先级
 
 `serviceHost` 与 `securityJsCode` 同时填写时，**以代理为准**，明文被忽略（控制台会提示一句）。
+
+---
+
+## 在 configuration.yaml 里配置（可选）
+
+Home Assistant **没有**“给前端脚本传配置”的官方配置键 —— 但前端资源本身就是一条 URL，
+把配置挂在**查询参数**上就行，脚本会去解析：
+
+```yaml
+frontend:
+  extra_module_url:
+    - /local/hass_amap.js?amapKey=你的Key&amapServiceHost=/_AMapService
+```
+
+| 参数 | 对应配置 | 说明 |
+|---|---|---|
+| `amapKey` | `key` | 高德 Web 端 Key |
+| `amapServiceHost` | `serviceHost` | 安全密钥代理地址（推荐，密钥不进浏览器） |
+| `amapSecurityJsCode` | `securityJsCode` | 明文安全密钥（会暴露在页面源码里，尽量别用） |
+
+读取优先级：**`window.__hassAmapConfig`（运行时注入）> URL 参数 > 文件里的常量**。
+
+两种加载方式都能读到参数：
+
+- **Lovelace 资源**（类型 `module` 或 `js`）→ 页面里有 `<script>` 标签，直接读；
+- **`frontend.extra_module_url`**（HA 用动态 `import()` 加载，页面里**没有** script 标签）→ 通过 `performance` 的资源加载记录识别，同样有效。
+
+### 把整条 URL 藏进 secrets.yaml
+
+HA 不支持字符串内插值，只能整条 URL 用 `!secret`：
+
+```yaml
+# configuration.yaml
+frontend:
+  extra_module_url:
+    - !secret amap_module_url
+```
+
+```yaml
+# secrets.yaml
+amap_module_url: "https://ha.example.com/local/hass_amap.js?amapKey=你的Key&amapServiceHost=/_AMapService"
+```
+
+### 注意事项
+
+- 改 `frontend:` 配置后要**重启 HA**；`extra_module_url` 对所有页面生效（包括登录页，没有地图就没影响）。
+- URL 里的参数会出现在页面源码中：`amapKey` 本来就是公开的（靠域名白名单/代理保护），
+  但 **`amapSecurityJsCode` 走 URL 等于明文暴露** → 生产环境请用 `amapServiceHost` 代理方式。
+- 同一脚本如果既被 Lovelace 资源加载、又被 `extra_module_url` 加载，脚本有幂等保护
+  （`window.__hassAmapInstalled`）不会重复初始化，但建议只保留一处。
+- `serviceHost` 含 `/` 一般不用转义；若值里有 `&`，请做 URL 编码（`%26`）。
 
 ---
 

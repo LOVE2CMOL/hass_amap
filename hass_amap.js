@@ -39,7 +39,69 @@
 	// 方式 B（明文，仅开发/临时用）：直接把 securityJsCode 写进来，会暴露在浏览器里
 	//   两项同时配置时以代理为准，明文会被忽略
 	const securityJsCode = '';
+	//
+	// 以上三项也可以不写死，改在 configuration.yaml 里传（见 README）：
+	//   frontend:
+	//     extra_module_url:
+	//       - /local/hass_amap.js?amapKey=xxx&amapServiceHost=/_AMapService
+	// 优先级：window.__hassAmapConfig > URL 参数 > 这里的常量
 	// ================================================================
+
+	// 允许把配置挂在本脚本 URL 的查询参数上（configuration.yaml / 资源地址都能用）
+	const URL_CONFIG_FIELDS = [
+		['amapKey', 'key'],
+		['amapServiceHost', 'serviceHost'],
+		['amapSecurityJsCode', 'securityJsCode']
+	];
+
+	// 收集“本脚本可能来自哪里”的线索：
+	//   - 普通 / type=module 的 <script> 标签（Lovelace 资源走这条）
+	//   - performance 资源记录（frontend.extra_module_url 是动态 import()，页面里没有 script 标签）
+	function collectScriptUrls() {
+		const urls = [];
+		if (document.currentScript && document.currentScript.src) {
+			urls.push(document.currentScript.src);
+		}
+		for (const script of document.querySelectorAll('script[src]')) {
+			urls.push(script.src);
+		}
+		try {
+			for (const entry of performance.getEntriesByType('resource')) {
+				urls.push(entry.name);
+			}
+		} catch (error) {
+			// 个别环境拿不到 resource timing，忽略
+		}
+		return urls;
+	}
+
+	// 参数名是我们自定义的，所以“URL 里带 amapKey/amapServiceHost/amapSecurityJsCode”即可认定是自己
+	function readUrlConfig() {
+		const config = {};
+		for (const raw of collectScriptUrls()) {
+			let url;
+			try {
+				url = new URL(raw, location.href);
+			} catch (error) {
+				continue;
+			}
+			for (const [param, field] of URL_CONFIG_FIELDS) {
+				const value = url.searchParams.get(param);
+				if (value) {
+					config[field] = value;
+				}
+			}
+		}
+		return config;
+	}
+
+	const settings = {
+		key,
+		serviceHost,
+		securityJsCode,
+		...readUrlConfig(),
+		...(window.__hassAmapConfig || {})
+	};
 
 	const CONFIG = {
 		// 高德内置样式；浅色用 normal，深色用 dark（也支持 amap://styles/grey / whitesmoke / darkblue 等）
@@ -177,15 +239,15 @@
 
 	// 安全密钥必须在 JS API 脚本加载之前设置，否则设置无效
 	function applySecurityConfig() {
-		const host = normalizeServiceHost(serviceHost);
+		const host = normalizeServiceHost(settings.serviceHost);
 		const config = {...(window._AMapSecurityConfig || {})};
 		if (host) {
-			if (securityJsCode) {
+			if (settings.securityJsCode) {
 				console.info('[hass_amap] 同时配置了安全密钥代理与明文密钥，按代理处理（明文忽略）');
 			}
 			config.serviceHost = host;
-		} else if (securityJsCode) {
-			config.securityJsCode = securityJsCode;
+		} else if (settings.securityJsCode) {
+			config.securityJsCode = settings.securityJsCode;
 		} else {
 			return;
 		}
@@ -194,8 +256,8 @@
 
 	function loadAmapSDK() {
 		return sdkPromise ??= (async () => {
-			if (!key || key.startsWith('<')) {
-				throw new Error('请先在 hass_amap.js 顶部的「配置」里填写高德 Web 端 Key');
+			if (!settings.key || settings.key.startsWith('<')) {
+				throw new Error('请填写高德 Web 端 Key（文件顶部「配置」，或 URL 参数 amapKey）');
 			}
 			applySecurityConfig();
 			if (window.AMap) {
@@ -203,7 +265,7 @@
 			}
 			const url = new URL('https://webapi.amap.com/maps');
 			url.searchParams.set('v', '2.0');
-			url.searchParams.set('key', key);
+			url.searchParams.set('key', settings.key);
 			// 官方限制：异步插入 <script> 必须带 callback，且回调要先挂到 window 上
 			const callbackName = '__hassAmapReady';
 			const sdkReady = new Promise((resolve) => {
