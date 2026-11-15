@@ -29,6 +29,8 @@ HA 原有的**设备标记 / 人员轨迹 / 区域编辑**等业务图层全部�
 ## 安装
 
 1. 下载 [`hass_amap.js`](./hass_amap.js)，放到 HA 的 `/config/www/` 目录（例如 `/config/www/hass_amap.js`）。
+   > 原来用百度版、资源地址是 `/local/hass_bmap.js` 的，可以把本文件**改名成 `hass_bmap.js` 直接顶替**
+   > （脚本不依赖文件名，改完强刷即可）。
 2. 编辑文件顶部「配置」两行：
 
    ```js
