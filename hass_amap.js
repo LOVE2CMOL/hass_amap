@@ -54,10 +54,25 @@
 		pitchGain: 1,
 		// 高德俯仰角上限（2D 地图无效，3D 地图在 0~83 之间）
 		maxPitch: 83,
-		loadTimeout: 20000
+		loadTimeout: 20000,
+		// 页面被禁止发送 Referer（如 HA 默认的 referrer-policy: no-referrer）时，
+		// 把高德 SDK 直连的接口请求改写到 serviceHost 代理，由 nginx 在服务端补 Referer / jscode。
+		// 需要先按 README「页面不放 Referer」一节配好 /_AMapService/h/<服务>/ 分流，再打开这个开关。
+		rewriteDirect: false
 	};
 
 	const HOST_CLASS = 'ha-amap-host';
+
+	// 高德 SDK 会直连这些主机；开启 rewriteDirect 后统一改写到 serviceHost 代理的 /h/<别名>/ 下
+	const DIRECT_HOST_ALIAS = {
+		'jsapi.amap.com': 'jsapi',
+		'pre-vdata.amap.com': 'vdata',
+		'webapi.amap.com': 'webapi',
+		'restapi.amap.com': 'restapi',
+		'o4.amap.com': 'style',
+		'custyle.amap.com': 'custyle',
+		'fmap01.amap.com': 'fmap01'
+	};
 
 	// ---------- 配置解析：文件常量 < 上次加载的配置 < 本次 URL 参数 / window 注入 ----------
 	// 允许把配置挂在本脚本 URL 的查询参数上（configuration.yaml / 资源地址都能用）
@@ -156,14 +171,37 @@
 	const originalFetch = window.fetch;
 	const emptyStyle = JSON.stringify({version: 8, sources: {}, layers: []});
 	window.fetch = function (input, init) {
-		const url = new URL(input instanceof Request ? input.url : input, window.location.href);
-		if (/^\/static\/map\/[^/]+\.json$/.test(url.pathname)) {
+		const raw = input instanceof Request ? input.url : String(input);
+		let url = null;
+		try {
+			url = new URL(raw, window.location.href);
+		} catch (error) {
+			// 非法 URL 交给原生 fetch 去报错
+		}
+		if (url && /^\/static\/map\/[^/]+\.json$/.test(url.pathname)) {
 			return Promise.resolve(new Response(emptyStyle, {
 				headers: {'Content-Type': 'application/json'}
 			}));
 		}
+		const rewritten = rewriteDirectUrl(raw);
+		if (rewritten) {
+			if (input instanceof Request) {
+				return originalFetch.call(window, new Request(rewritten, input), init);
+			}
+			return originalFetch.call(window, rewritten, init);
+		}
 		return originalFetch.call(window, input, init);
 	};
+
+	// 老接口用 XHR（如 flydata 鉴权），一样改写
+	const OriginalXHR = window.XMLHttpRequest;
+	if (OriginalXHR && OriginalXHR.prototype) {
+		const originalOpen = OriginalXHR.prototype.open;
+		OriginalXHR.prototype.open = function (method, url, ...rest) {
+			const rewritten = rewriteDirectUrl(String(url));
+			return originalOpen.call(this, method, rewritten || url, ...rest);
+		};
+	}
 
 	// ---------- 2. WGS84 → GCJ-02（HA 存的是 WGS84，高德要火星坐标）----------
 	const PI = Math.PI;
@@ -262,6 +300,38 @@
 			url.pathname = '/_AMapService';
 		}
 		return url.toString().replace(/\/+$/, '');
+	}
+
+	// 把“直连高德”的 URL 改写成走代理：{serviceHost}/h/<别名>/<原路径>
+	// 这样即使页面被 referrer-policy 禁止发 Referer，代理也能在服务端补上
+	function rewriteDirectUrl(raw) {
+		if (!CONFIG.rewriteDirect) {
+			return '';
+		}
+		const host = normalizeServiceHost(currentSettings().serviceHost);
+		if (!host) {
+			return '';
+		}
+		let url;
+		try {
+			url = new URL(raw, location.href);
+		} catch (error) {
+			return '';
+		}
+		if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+			return '';
+		}
+		const alias = DIRECT_HOST_ALIAS[url.hostname];
+		if (!alias) {
+			return '';
+		}
+		const base = new URL(host);
+		const prefix = base.pathname.replace(/\/+$/, '');
+		// 已经指向代理的请求不要再套一层
+		if (url.origin === base.origin && url.pathname.startsWith(prefix + '/')) {
+			return '';
+		}
+		return base.origin + prefix + '/h/' + alias + url.pathname + url.search;
 	}
 
 	// 安全密钥必须在 JS API 脚本加载之前设置，否则设置无效
