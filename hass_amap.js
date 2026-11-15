@@ -454,8 +454,11 @@
 			reportFallback(error, map);
 			return;
 		}
-		// 加载期间地图可能已经被换掉
-		if (engine._map !== map || !connectedMaps.has(map)) {
+		// 加载期间地图可能已经被换掉 / 销毁；顺手清掉占位，避免以后再也接不上
+		if (engine._map !== map || !connectedMaps.has(map) || map._removed || !map.getContainer().isConnected) {
+			if (connectedMaps.get(map) === null) {
+				connectedMaps.delete(map);
+			}
 			return;
 		}
 
@@ -487,12 +490,8 @@
 		map.on('style.load', onStyle);
 		map.on('styledata', onStyle);
 		base.onStyleLoaded();
-		await base.attach(AMap);
-		if (base.destroyed) {
-			return;
-		}
-		map.once('idle', () => base.requestSync());
 
+		// 先挂上销毁钩子：高德实例创建期间地图也可能被销毁
 		const originalDestroy = engine.destroy;
 		engine.destroy = function (...args) {
 			entry.teardown();
@@ -500,6 +499,19 @@
 			engine.destroy = originalDestroy;
 			return originalDestroy.apply(this, args);
 		};
+
+		try {
+			await base.attach(AMap);
+		} catch (error) {
+			entry.teardown();
+			connectedMaps.delete(map);
+			reportFallback(error, map);
+			return;
+		}
+		if (base.destroyed) {
+			return;
+		}
+		map.once('idle', () => base.requestSync());
 	}
 
 	// 高德不可用（Key 错、超时……）时回退到 HA 原生底图，别留一块空白
@@ -554,7 +566,7 @@
 
 	// ---------- 6. 找到页面上的 ha-map ----------
 	const retryCounts = new WeakMap();
-	const RETRY_LIMIT = 40;
+	const RETRY_LIMIT = 100;
 
 	function connectElement(element) {
 		if (!element || element.localName !== 'ha-map') {
