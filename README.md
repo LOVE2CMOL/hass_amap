@@ -69,7 +69,9 @@ HA 原有的**设备标记 / 人员轨迹 / 区域编辑**等业务图层全部�
 [高德开放平台](https://console.amap.com/dev/key/app) → 应用管理 → 新建应用 → 添加 Key：
 
 - **服务平台**：`Web 端 (JS API)`
-- **域名白名单**：填你访问 HA 用的域名（如 `ha.example.com`；用 IP 访问就填 IP）
+- **域名白名单**：**建议留空** —— HA 页面默认不发 Referer（`referrer-policy: no-referrer`），
+  填了白名单反而会报 `INVALID_USER_DOMAIN`；留空时高德不做域名校验。
+  想用白名单限制来源就要走代理、由 nginx 补 Referer（见「安全密钥」一节）
 - 若 Key 是 2021-12-02 之后申请的，还要配「安全密钥」，见下一节；不配会报 `INVALID_USER_SCODE` / 地图空白。
 
 ---
@@ -138,17 +140,100 @@ const serviceHost = '/_AMapService';                  // 同源相对路径（�
 - **只写域名**（如 `https://ha.example.com`）会自动补 `/_AMapService`；**已带路径**（如 `/custom-proxy`）则原样使用，不替你做拼接；
 - **建议代理与 HA 同源**；若代理放在别的域名，需要给该域名加 CORS 头（`Access-Control-Allow-Origin`）。
 
-### B. 明文方式（仅开发 / 内网临时用）
+### B. 明文方式（最简单，密钥会暴露）
+
+不走 nginx 代理，密钥直接给前端。
+⚠️ **必须把 `serviceHost` 留空**，否则「代理优先」，明文会被忽略。
+
+**填法一：改 `hass_amap.js` 顶部**
 
 ```js
+const key = '你的高德Key';
+
+const serviceHost = '';                                   // ← 必须留空
 const securityJsCode = '你的securityJsCode';
 ```
 
-⚠️ 明文会直接出现在页面源码与网络面板里，**不建议生产使用**。
+**填法二：不改文件，走 `configuration.yaml`**
+
+```yaml
+frontend:
+  extra_module_url:
+    - /local/hass_amap.js?amapKey=你的Key&amapSecurityJsCode=你的securityJsCode
+```
+
+> 注意**不要**带 `amapServiceHost`；`frontend:` 改完需要**重启 HA**。
+
+**nginx 侧**：明文模式**用不到** `_AMapService`，相关 location 可以直接删掉（`nginx -s reload`）。
+好处是**不会留下一个公开的 jscode 代理**被人白用；如果保留，请按「限制 `_AMapService` 访问」收紧。
+
+**验证**：控制台执行 `__hassAmapDebug()`，应看到
+
+```
+serviceHost: '(未配置)'
+securityJsCode: '(已设置·明文)'
+securityConfig: { securityJsCode: '...' }
+```
+
+⚠️ 明文会出现在页面源码与 Network 面板里，别人拿到就能刷你的额度，**只建议自用 / 临时调试**。
 
 ### 优先级
 
 `serviceHost` 与 `securityJsCode` 同时填写时，**以代理为准**，明文被忽略（控制台会提示一句）。
+所以切明文时一定要把 `serviceHost` 清空（文件里或 YAML 里的 `amapServiceHost` 都去掉）。
+
+---
+
+## 限制 `_AMapService` 被外部滥用（代理模式）
+
+代理 location 里带着 `jscode`，**公开可访问就等于一个开放代理** —— 别人能拿它刷你的高德额度。
+而且 HA 页面默认**不发 Referer**（`no-referrer`），所以**不能用 Referer 来判断来源**。
+
+### 情况 A：前面还有一层反代
+
+只放行上层反代的地址：
+
+```nginx
+location ^~ /_AMapService/ {
+    allow 192.168.83.15;      # 上层反代地址（或网段 192.168.83.0/24）
+    allow 127.0.0.1;
+    deny all;
+
+    set $args "$args&jscode=你的安全密钥";
+    proxy_pass https://restapi.amap.com/;
+}
+```
+
+`allow/deny` 判的是 TCP 源地址，不受 `X-Forwarded-For` 影响；三条 `_AMapService` location 都要加。
+
+### 情况 B：这台 nginx 就是公网入口
+
+按来源 IP 限制不了（浏览器就是外部客户端），改成限制「同源浏览器请求」＋限速：
+
+```nginx
+# http {} 里
+limit_req_zone $binary_remote_addr zone=amap:10m rate=30r/s;
+
+# server {} 里，每条 _AMapService location 内
+if ($http_sec_fetch_site !~ ^(same-origin|same-site)$) { return 403; }
+if ($request_method !~ ^(GET|POST|HEAD)$) { return 405; }
+limit_req zone=amap burst=20 nodelay;
+```
+
+- `Sec-Fetch-Site` 由浏览器自动加，普通 curl / 其它站点没有；但**能被伪造**，属于「防滥用」不是强认证；
+- `if` 里只写 `return`，不要写 `proxy_pass`。
+
+### 更隐蔽的做法
+
+把路径换成随机前缀（只在你自己的配置和 `serviceHost` 里出现）：
+
+```js
+const serviceHost = '/_AMapService-9f3a7c';
+```
+
+nginx 里相应改成 `location ^~ /_AMapService-9f3a7c/`，配合上面的头和限速，滥用成本更高。
+
+> 💡 用**明文方式**（方式 B）就完全不需要这些 —— 删掉 `_AMapService` 即可。
 
 ---
 
@@ -168,6 +253,14 @@ frontend:
 | `amapKey` | `key` | 高德 Web 端 Key |
 | `amapServiceHost` | `serviceHost` | 安全密钥代理地址（推荐，密钥不进浏览器） |
 | `amapSecurityJsCode` | `securityJsCode` | 明文安全密钥（会暴露在页面源码里，尽量别用） |
+
+明文方式示例（**不要**带 `amapServiceHost`）：
+
+```yaml
+frontend:
+  extra_module_url:
+    - /local/hass_amap.js?amapKey=你的Key&amapSecurityJsCode=你的securityJsCode
+```
 
 读取优先级：**`window.__hassAmapConfig`（运行时注入）> URL 参数 > 文件里的常量**。
 
@@ -214,6 +307,8 @@ amap_module_url: "https://ha.example.com/local/hass_amap.js?amapKey=你的Key&am
 | `zoomOffset` | `1` | 高德瓦片 256px、MapLibre 512px，同一比例尺 zoom 差 1；一般不用改 |
 | `pitchGain` | `1` | 俯仰角换算系数；大角度俯仰时若觉得底图与标记“上下错开”，可试 `0.9`～`1.1` |
 | `minZoom` / `maxZoom` | `2` / `20` | 高德支持的缩放范围，超出会被夹住 |
+| `convertGcj` | `true` | 把 HA 的 WGS84 转成高德 GCJ-02；极少数 HA 里存的本来就是 GCJ 坐标时可关掉 |
+| `showScaleBar` | `true` | HA 没开 `scale_ruler` 时脚本自己画比例尺；HA 开了会自动跳过，不重复 |
 
 ---
 
